@@ -1,0 +1,244 @@
+# System Prompt Configuration for AI Developer
+# Context: "Rajat Task" - 7-Day Multi-Channel Resolution Bot
+
+role: "Senior Backend Architect & TypeScript Developer"
+objective: "Build an enterprise-grade, fault-tolerant, multi-channel support resolution bot using Node.js, TypeScript, BullMQ, and Redis."
+
+# ------------------------------------------------------------------
+# ORIGINAL CLIENT REQUIREMENTS (Raw Text for Context)
+# ------------------------------------------------------------------
+original_client_requirements: |
+  Rajat task
+  /src
+  /config       → encrypted prompt bundles (delivered separately via S3 link)
+  /workers      → all TypeScript workers
+  /queues       → BullMQ setup
+  /adapters     → HTTP, email, voice adapters (generic)
+  /utils        → retry, human-like delays, typing indicators
+  Dockerfile + pm2.config.js
+
+  ## Workers you must build 
+  1. extended-controller.worker.ts        → main 1–7 day loop controller
+  2. channel-selector.worker.ts           → decides HTTP / email / voice per job
+  3. message-builder.worker.ts            → pulls encrypted templates and fills variables
+  4. follow-up-engine.worker.ts           → schedules Day-2, Day-4, Day-7 actions
+  5. response-parser.worker.ts            → analyses incoming replies and decides next step
+  6. escalation-path.worker.ts            → secondary path if first path stalls
+  7. completion-webhook.worker.ts         → posts final masked status back to n8n
+
+  ## How it is triggered
+  - Receives BullMQ job from node-n8n repo with payload:
+    { workflowId: string, regionCode: string, tierFlags: object }
+  - Runs up to 7 days
+  - Posts final result via secure webhook (URL supplied in env)
+
+  Real-world examples of what it does (so you understand the pattern):
+  - Day 0: send initial message via email OR live-chat widget OR SMS
+  - Day 1–2: if no reply → send polite follow-up
+  - Day 4: if still no reply → try a different channel (e.g. switch from email → WhatsApp or voice call)
+  - Day 7: final follow-up or auto-close + notify internal system
+  - At any point the customer can reply → system understands the reply with AI and either marks as resolved or escalates/continues
+
+  That’s literally it.  
+  The business team just doesn’t want the exact message content or company names inside the repo (legal/compliance reasons), so all text templates are delivered separately as encrypted JSON from S3.
+
+  What you DO need to know right now:
+
+  1. **Payload from n8n** will always look like this:
+     ```json
+     {
+       "workflowId": "wf_123456789",
+       "regionCode": "AU" | "EU" | "US" | "UK" | "CA",
+       "tierFlags": { "priority": "high" | "normal", "channels": ["email","chat","voice"] }
+     }
+     ```
+
+  2. The 7 workers must run in this exact sequence (already in the sheet):
+     extended-controller → channel-selector → message-builder → send → wait for reply → response-parser → follow-up-engine OR escalation-path → completion-webhook
+
+  3. “Human-like” delays are mandatory:
+     - 30–90 sec random delay before sending any message
+     - Typing indicators for web-chat (3–8 seconds)
+     - Random 6–18 hour gaps between follow-ups
+
+  4. Success = customer replies with any of these keywords (case-insensitive): “yes”, “ok”, “confirmed”, “done”, “approved”, “interested” → immediately trigger completion-webhook
+     Failure = 7 days reached or customer says “no”, “stop”, “cancel” → also trigger webhook with different status
+
+  5. Everything else is already in the sheet you have.  
+  You’re building an enterprise-grade, multi-day, multi-channel support resolution bot. Nothing exotic.
+
+# ------------------------------------------------------------------
+# ARCHITECTURE & IMPLEMENTATION
+# ------------------------------------------------------------------
+
+project_context:
+  name: "rajat-task-bot"
+  description: >
+    A state-machine based bot that manages a 7-day customer engagement lifecycle.
+    It receives a job from n8n, attempts to resolve a query via Email/Voice/Chat over 7 days,
+    and posts the final result back to a webhook.
+  constraints:
+    - "No hardcoded text/templates in repo (must load from S3/Config)."
+    - "Strict 7-day lifecycle limits."
+    - "Must include human-like delays and typing indicators."
+    - "Must use BullMQ for state management."
+
+tech_stack:
+  runtime: "Node.js"
+  language: "TypeScript"
+  queue_system: "BullMQ (Redis)"
+  process_manager: "PM2"
+  containerization: "Docker"
+
+directory_structure:
+  root: "/rajat-task-bot"
+  files:
+    - "Dockerfile"
+    - "pm2.config.js"
+    - "package.json"
+    - "tsconfig.json"
+    - ".env.example"
+  directories:
+    src:
+      files: ["index.ts"]
+      subdirectories:
+        config:
+          description: "Configuration and secrets"
+          files:
+            - "s3-loader.ts" # Logic to fetch encrypted bundles
+            - "secrets.ts"   # Env var validation
+        queues:
+          description: "BullMQ setup"
+          files:
+            - "connection.ts"    # Redis connection
+            - "definitions.ts"   # Queue definitions
+            - "job-processor.ts" # Worker routing
+        workers:
+          description: "Core business logic units"
+          files:
+            - "extended-controller.worker.ts" # The Brain (Main Loop)
+            - "channel-selector.worker.ts"    # The Router (Email vs Voice)
+            - "message-builder.worker.ts"     # The Composer (Template filling)
+            - "follow-up-engine.worker.ts"    # The Scheduler (Delays)
+            - "response-parser.worker.ts"     # The Analyst (Keyword check)
+            - "escalation-path.worker.ts"     # The Backup Plan
+            - "completion-webhook.worker.ts"  # The Reporter
+        adapters:
+          description: "External communication layers"
+          files:
+            - "email.adapter.ts"
+            - "voice.adapter.ts"
+            - "http.adapter.ts"
+        utils:
+          description: "Helper functions"
+          files:
+            - "human-delays.ts"     # Random sleeps (30-90s)
+            - "typing-indicator.ts" # Mock typing logic
+            - "encryption.ts"       # Decryption helpers
+
+core_logic:
+  input_payload:
+    structure: |
+      {
+        "workflowId": "string",
+        "regionCode": "AU|EU|US|UK|CA",
+        "tierFlags": { "priority": "high|normal", "channels": ["email", "chat", "voice"] }
+      }
+  
+  worker_sequence:
+    1_controller: "Receive payload -> trigger Channel Selector."
+    2_channel_selector: "Decide channel (Email/Voice) based on region/tier -> trigger Builder."
+    3_message_builder: "Fetch encrypted template -> Fill vars -> trigger Adapter."
+    4_send_process: "Wait (30-90s) -> Send via Adapter -> trigger Follow-up Engine."
+    5_follow_up: "Schedule check in 24h/48h/7d using delayed jobs."
+    6_response_parser: "Analyze incoming reply. If 'yes/ok/done' -> trigger Completion. If 'stop/no' -> trigger Completion (failed)."
+    7_completion: "Post final status to n8n webhook."
+
+  rules:
+    human_behavior:
+      - "Delay 30-90 seconds before sending initial messages."
+      - "Delay 6-18 hours between follow-ups."
+      - "Show typing indicators (3-8s) for chat."
+    success_criteria:
+      keywords: ["yes", "ok", "confirmed", "done", "approved", "interested"]
+    failure_criteria:
+      keywords: ["no", "stop", "cancel"]
+      timeout: "7 days elapsed with no response."
+
+implementation_roadmap:
+  phase_1:
+    name: "The Skeleton"
+    goal: "Infrastructure & State Flow"
+    tasks:
+      - "Initialize TS, Docker, Redis connection."
+      - "Setup MainQueue."
+      - "Implement 'extended-controller' (Input) -> 'completion-webhook' (Output) loop."
+      - "Verify job flows from start to finish without logic."
+  
+  phase_2:
+    name: "The Muscles"
+    goal: "Channels & Content"
+    tasks:
+      - "Implement s3-loader (mock or real)."
+      - "Implement 'channel-selector' logic (Region specific)."
+      - "Implement 'message-builder' (Template filling)."
+      - "Create dummy Adapters (console.log)."
+
+  phase_3:
+    name: "The Brain"
+    goal: "Logic, Timing & Parsing"
+    tasks:
+      - "Implement 'response-parser' (Regex matching)."
+      - "Implement 'follow-up-engine' using BullMQ delayed jobs."
+      - "Implement 'escalation-path' for stalled workflows."
+
+  phase_4:
+    name: "The Polish"
+    goal: "Humanization & Production"
+    tasks:
+      - "Add 'human-delays' (random sleep)."
+      - "Add typing indicators."
+      - "Finalize Dockerfile & PM2 config."
+
+instructions:
+  - "Follow the directory structure precisely."
+  - "Do not create monolithic files; keep workers separate."
+  - "Ensure all environment variables are validated in secrets.ts."
+  - "Use BullMQ 'Sandboxed Processors' for workers where possible to prevent main thread blocking."
+
+# ------------------------------------------------------------------
+# PROGRESS CHECKLIST (For AI/Copilot Tracking)
+# ------------------------------------------------------------------
+progress_checklist:
+  phase_1_infrastructure:
+    - [ ] Initialize TypeScript project (tsconfig.json, package.json)
+    - [ ] Setup Dockerfile and docker-compose (for Redis)
+    - [ ] Implement Redis connection logic (src/queues/connection.ts)
+    - [ ] Define BullMQ Queues (src/queues/definitions.ts)
+    - [ ] Create Extended Controller Worker (src/workers/extended-controller.worker.ts)
+    - [ ] Create Completion Webhook Worker (src/workers/completion-webhook.worker.ts)
+    - [ ] Create Entry Point (src/index.ts)
+    - [ ] TEST: Verify minimal job flow (Controller -> Webhook)
+
+  phase_2_channels_content:
+    - [ ] Implement S3 Config Loader (src/config/s3-loader.ts)
+    - [ ] Implement Secrets Validation (src/config/secrets.ts)
+    - [ ] Create Channel Selector Worker (src/workers/channel-selector.worker.ts)
+    - [ ] Create Message Builder Worker (src/workers/message-builder.worker.ts)
+    - [ ] Create Base Adapters (src/adapters/email.adapter.ts, etc.)
+    - [ ] TEST: Verify correct channel selection and template loading
+
+  phase_3_logic_state:
+    - [ ] Create Response Parser Worker (src/workers/response-parser.worker.ts)
+    - [ ] Create Follow-up Engine with Delayed Jobs (src/workers/follow-up-engine.worker.ts)
+    - [ ] Create Escalation Path Worker (src/workers/escalation-path.worker.ts)
+    - [ ] Implement State Machine Logic (Day 0 -> Day 7 loop)
+    - [ ] TEST: Verify 7-day simulation and keyword parsing
+
+  phase_4_polish:
+    - [ ] Implement Human Delays (src/utils/human-delays.ts)
+    - [ ] Implement Typing Indicators (src/utils/typing-indicator.ts)
+    - [ ] Implement Encryption/Decryption utils (src/utils/encryption.ts)
+    - [ ] Configure PM2 (pm2.config.js)
+    - [ ] Finalize Error Handling and DLQ (Dead Letter Queue)
+    - [ ] TEST: Full End-to-End Simulation
